@@ -33,6 +33,12 @@ export TELEGRAM_API_BASE=https://api.telegram.org
 python3 bot.py
 ```
 
+Or install a background service with automatic platform detection:
+
+```bash
+python3 install_service.py
+```
+
 ## Commands
 
 - `/start`
@@ -48,9 +54,35 @@ python3 bot.py
 - On this machine, the `systemd` unit also needs `node` on `PATH` because a Claude SessionEnd hook invokes Node.js.
 - Keep `CLAUDE_WORKDIR` narrow and set tool permissions conservatively before exposing this bot to real users.
 
-## systemd User Service
+## Service Install
 
-Install the provided user unit:
+The preferred path is the auto-installer. It detects Linux, macOS, or Windows and installs the matching background service:
+
+```bash
+python3 install_service.py
+```
+
+It creates a platform-specific env file, copies the bridge-specific Claude settings override, installs the service, and starts it unless you pass `--no-start`.
+
+Platform targets:
+
+- Linux: `systemd --user`
+- macOS: `launchd` user agent
+- Windows: Task Scheduler (`schtasks`)
+
+Examples:
+
+```bash
+python3 install_service.py
+python3 install_service.py --platform macos --no-start
+python3 install_service.py --platform windows
+```
+
+The runtime path is unified across platforms through [service_entry.py](/home/chao/projects/claudeBot/service_entry.py), which loads the env file and patches `PATH` for common Claude/Node installations before starting the bot.
+
+### Linux Manual Install
+
+If you still want the manual Linux path:
 
 ```bash
 mkdir -p ~/.config/systemd/user ~/.config/telegram-claude-bridge
@@ -63,7 +95,7 @@ systemctl --user enable --now telegram-claude-bridge.service
 journalctl --user -u telegram-claude-bridge.service -f
 ```
 
-If you want it to survive reboots without an active login session:
+If you want the Linux user service to survive reboots without an active login session:
 
 ```bash
 loginctl enable-linger "$USER"

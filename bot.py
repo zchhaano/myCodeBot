@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from approval_state import ApprovalState, PendingApproval
 from bridge_runner import BridgeRunner, RunnerError, RunnerResponse
+from chat_log import ChatLogStore
 from claude_runner import format_text_reply
 from config import Settings, load_all_settings
 from codex_usage import load_codex_usage
@@ -63,6 +64,7 @@ class TelegramBot:
         version_info: dict[str, str],
         approvals: ApprovalState,
         workdirs: WorkdirStore,
+        chat_log: ChatLogStore,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -72,6 +74,7 @@ class TelegramBot:
         self._version_info = version_info
         self._approvals = approvals
         self._workdirs = workdirs
+        self._chat_log = chat_log
         self._offset = 0
         self._chat_locks: defaultdict[int, threading.Lock] = defaultdict(threading.Lock)
 
@@ -262,6 +265,7 @@ class TelegramBot:
             )
             return
 
+        self._log_message(chat_id=chat_id, role="user", source="telegram", text=text)
         self._run_prompt(
             chat_id=chat_id,
             prompt=text,
@@ -276,6 +280,12 @@ class TelegramBot:
             self._send_message(chat_id, "图片消息缺少 file_id。")
             return
         caption = (message.get("caption") or "").strip()
+        self._log_message(
+            chat_id=chat_id,
+            role="user",
+            source="telegram",
+            text=caption or "[Telegram image]",
+        )
         self._send_message(chat_id, f"已收到图片，正在下载并转交给 {self._provider_label()}…")
         try:
             media = self._download_telegram_media(
@@ -300,6 +310,12 @@ class TelegramBot:
             self._send_message(chat_id, "图片文件缺少 file_id。")
             return
         caption = (message.get("caption") or "").strip()
+        self._log_message(
+            chat_id=chat_id,
+            role="user",
+            source="telegram",
+            text=caption or "[Telegram image document]",
+        )
         self._send_message(chat_id, f"已收到图片文件，正在下载并转交给 {self._provider_label()}…")
         try:
             media = self._download_telegram_media(
@@ -324,6 +340,12 @@ class TelegramBot:
             self._send_message(chat_id, "语音消息缺少 file_id。")
             return
         caption = (message.get("caption") or "").strip()
+        self._log_message(
+            chat_id=chat_id,
+            role="user",
+            source="telegram",
+            text=caption or "[Telegram voice]",
+        )
         self._send_message(chat_id, "已收到语音，正在下载并转写…")
         try:
             media = self._download_telegram_media(
@@ -333,6 +355,12 @@ class TelegramBot:
                 original_name=payload.get("file_name"),
             )
             transcript = self._media_handler.transcribe_voice(media)
+            self._log_message(
+                chat_id=chat_id,
+                role="user",
+                source="telegram",
+                text=f"[Voice transcript]\n{transcript.text.strip() or '(empty transcription)'}",
+            )
             self._send_message(chat_id, f"语音已转写，正在转交给 {self._provider_label()}…")
             prompt = self._media_handler.build_voice_prompt(transcript)
             self._run_prompt(chat_id=chat_id, prompt=prompt, start_text=None)
@@ -398,7 +426,7 @@ class TelegramBot:
                 cwd=workdir,
             )
             for part in format_text_reply(response.text):
-                self._send_message(chat_id, part)
+                self._send_message(chat_id, part, role="assistant")
             self._capture_permission_request(
                 chat_id=chat_id,
                 original_prompt=prompt,
@@ -465,14 +493,16 @@ class TelegramBot:
                 )
 
             parts = format_text_reply(latest_text)
+            for part in parts:
+                self._log_message(chat_id=chat_id, role="assistant", source="bridge", text=part)
             if message_id is None:
                 for part in parts:
-                    self._send_message(chat_id, part)
+                    self._send_message(chat_id, part, role="assistant")
             else:
                 if parts[0] != last_preview:
-                    self._edit_message(chat_id, message_id, parts[0])
+                    self._edit_message(chat_id, message_id, parts[0], role="assistant")
                 for part in parts[1:]:
-                    self._send_message(chat_id, part)
+                    self._send_message(chat_id, part, role="assistant")
             self._capture_permission_request(
                 chat_id=chat_id,
                 original_prompt=text,
@@ -641,7 +671,7 @@ class TelegramBot:
                     cwd=approval.cwd,
                 )
             for part in format_text_reply(response.text):
-                self._send_message(chat_id, part)
+                self._send_message(chat_id, part, role="assistant")
             self._capture_permission_request(
                 chat_id=chat_id,
                 original_prompt=approval.original_prompt,
@@ -788,7 +818,8 @@ class TelegramBot:
             "现在可以直接让机器人在这个目录里开始新项目。",
         )
 
-    def _send_message(self, chat_id: int, text: str) -> dict[str, Any]:
+    def _send_message(self, chat_id: int, text: str, role: str = "system") -> dict[str, Any]:
+        self._log_message(chat_id=chat_id, role=role, source="bridge", text=text)
         payload = {
             "chat_id": str(chat_id),
             "text": text,
@@ -796,7 +827,7 @@ class TelegramBot:
         response = self._call("sendMessage", payload)
         return response.get("result", {})
 
-    def _edit_message(self, chat_id: int, message_id: int, text: str) -> dict[str, Any]:
+    def _edit_message(self, chat_id: int, message_id: int, text: str, role: str = "system") -> dict[str, Any]:
         payload = {
             "chat_id": str(chat_id),
             "message_id": str(message_id),
@@ -854,6 +885,46 @@ class TelegramBot:
         except TelegramAPIError:
             LOGGER.exception("Failed to sync Telegram bot commands")
 
+    def _log_message(self, *, chat_id: int, role: str, source: str, text: str) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        self._chat_log.append(chat_id=chat_id, role=role, source=source, text=clean)
+
+    def submit_web_prompt(self, chat_id: int, prompt: str, *, mirror_to_telegram: bool = True) -> None:
+        worker = threading.Thread(
+            target=self._run_web_prompt,
+            args=(chat_id, prompt, mirror_to_telegram),
+            name=f"web-chat-{chat_id}",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_web_prompt(self, chat_id: int, prompt: str, mirror_to_telegram: bool) -> None:
+        clean = prompt.strip()
+        if not clean:
+            return
+
+        with self._chat_locks[chat_id]:
+            self._runtime_state.record_message()
+            self._log_message(chat_id=chat_id, role="user", source="web", text=clean)
+            if mirror_to_telegram:
+                try:
+                    payload = {
+                        "chat_id": str(chat_id),
+                        "text": f"[Desktop] {clean}",
+                    }
+                    self._call("sendMessage", payload)
+                except TelegramAPIError as exc:
+                    LOGGER.exception("Failed to mirror desktop message to Telegram chat %s", chat_id)
+                    self._log_message(
+                        chat_id=chat_id,
+                        role="system",
+                        source="bridge",
+                        text=f"Desktop message mirror failed:\n{exc}",
+                    )
+            self._run_prompt(chat_id=chat_id, prompt=clean, start_text=None)
+
 
 def main() -> None:
     settings_list = load_all_settings()
@@ -892,9 +963,29 @@ def _run_single_bot(settings: Settings) -> None:
     runtime_state = BridgeRuntimeState()
     version_info = get_version_snapshot(settings)
     approvals = ApprovalState(settings.approval_store_path)
+    chat_log = ChatLogStore(settings.session_store_path.with_name("chat_log.json"))
+    bot = TelegramBot(
+        settings,
+        store,
+        runner,
+        media_handler,
+        runtime_state,
+        version_info,
+        approvals,
+        workdirs,
+        chat_log,
+    )
     if settings.status_web_enabled:
-        start_status_server(settings, store, workdirs, approvals, runtime_state, version_info)
-    bot = TelegramBot(settings, store, runner, media_handler, runtime_state, version_info, approvals, workdirs)
+        start_status_server(
+            settings,
+            store,
+            workdirs,
+            approvals,
+            runtime_state,
+            version_info,
+            chat_log,
+            bot.submit_web_prompt,
+        )
     bot.run_forever()
 
 

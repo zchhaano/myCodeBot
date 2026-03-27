@@ -20,6 +20,7 @@ from claude_runner import format_text_reply
 from config import Settings, load_all_settings
 from codex_usage import load_codex_usage
 from media_handler import DownloadedMedia, MediaHandler, MediaHandlerError
+from resume_telegram_session import format_resume_target, get_resume_target, get_resume_targets_for_chat
 from runtime_state import BridgeRuntimeState
 from runner_factory import build_runner
 from session_store import SessionStore
@@ -88,7 +89,7 @@ class TelegramBot:
             f"直接发文本即可转发到 {self._provider_label()}。\n"
             "也支持图片和语音消息。\n"
             "命令: /help /status /health /version /clear /project /project_status /approve /deny "
-            "/approve_always /approve_bypass /approve_manual"
+            "/approve_always /approve_bypass /approve_manual /resume_local"
         )
 
     def _build_status_text(self, chat_id: int) -> str:
@@ -233,6 +234,10 @@ class TelegramBot:
 
         if text.startswith("/project"):
             self._dispatch_project_command(chat_id, text)
+            return
+
+        if text.startswith("/resume_local"):
+            self._dispatch_resume_local(chat_id, text)
             return
 
         if text.startswith("/approve_bypass") or text.startswith("/approve-bypass"):
@@ -818,6 +823,31 @@ class TelegramBot:
             "现在可以直接让机器人在这个目录里开始新项目。",
         )
 
+    def _dispatch_resume_local(self, chat_id: int, text: str) -> None:
+        parts = text.split(maxsplit=1)
+        provider = parts[1].strip().lower() if len(parts) > 1 and parts[1].strip() else None
+        if provider and provider not in {"claude", "codex", "copilot"}:
+            self._send_message(chat_id, "用法:\n/resume_local\n/resume_local claude\n/resume_local codex")
+            return
+
+        try:
+            if provider:
+                targets = [get_resume_target(chat_id=chat_id, provider=provider)]
+            else:
+                targets = get_resume_targets_for_chat(chat_id)
+        except RuntimeError as exc:
+            self._send_message(chat_id, f"生成本地续聊命令失败:\n{exc}")
+            return
+
+        if not targets:
+            self._send_message(chat_id, "当前 chat 没有可恢复的本地会话。")
+            return
+
+        header = "本地继续这个 Telegram 会话可用以下命令："
+        body = "\n\n".join(format_resume_target(target) for target in targets)
+        for part in format_text_reply(f"{header}\n\n{body}"):
+            self._send_message(chat_id, part)
+
     def _send_message(self, chat_id: int, text: str, role: str = "system") -> dict[str, Any]:
         self._log_message(chat_id=chat_id, role=role, source="bridge", text=text)
         payload = {
@@ -868,6 +898,7 @@ class TelegramBot:
             {"command": "approve_always", "description": "Always auto-approve in this chat"},
             {"command": "approve_bypass", "description": "Auto-approve broader Bash/git access"},
             {"command": "approve_manual", "description": "Turn off auto-approve"},
+            {"command": "resume_local", "description": "Show local Claude/Codex resume commands"},
             {"command": "deny", "description": "Deny pending request"},
         ]
         try:

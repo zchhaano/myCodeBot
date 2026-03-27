@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import shlex
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -11,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from chat_log import ChatLogStore
 from config import Settings
 from codex_usage import load_codex_usage
+from resume_telegram_session import get_resume_targets_for_chat
 from runtime_state import BridgeRuntimeState
 from session_store import SessionStore
 from workdir_store import WorkdirStore
@@ -259,6 +261,7 @@ def _chat_payload(
     chat_log: ChatLogStore,
 ) -> dict[str, Any]:
     record = store.get(chat_id)
+    resume_targets = get_resume_targets_for_chat(chat_id)
     messages = [
         {
             "id": item.id,
@@ -275,6 +278,16 @@ def _chat_payload(
         "updated_at": record.updated_at if record else None,
         "cwd": record.cwd if record else workdirs.get(chat_id),
         "pending_approval": approvals.get(chat_id) is not None,
+        "resume_targets": [
+            {
+                "bot": target.settings.name,
+                "provider": target.settings.provider,
+                "session_id": target.record.session_id,
+                "cwd": target.record.cwd,
+                "command": shlex.join(target.command),
+            }
+            for target in resume_targets
+        ],
         "messages": messages,
     }
 
@@ -523,6 +536,24 @@ def _render_chat_html(settings: Settings) -> str:
       border-bottom: 1px solid var(--line);
       background: rgba(255, 253, 248, 0.8);
     }}
+    .resume-strip {{
+      margin-top: 14px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .resume-card {{
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: var(--panel);
+      min-width: 220px;
+    }}
+    .resume-card button {{
+      margin-top: 8px;
+      padding: 8px 12px;
+      font-size: 14px;
+    }}
     .messages {{
       padding: 22px 24px 28px;
       overflow: auto;
@@ -622,6 +653,7 @@ def _render_chat_html(settings: Settings) -> str:
       <section class="topbar">
         <h2 id="chatTitle">No chat selected</h2>
         <p class="subtle" id="chatMeta">Pick an existing chat or enter a chat_id manually.</p>
+        <div class="resume-strip" id="resumeStrip"></div>
       </section>
       <section class="messages" id="messages"></section>
       <form id="composer">
@@ -644,6 +676,7 @@ def _render_chat_html(settings: Settings) -> str:
     const chatIdInputEl = document.getElementById("chatIdInput");
     const chatTitleEl = document.getElementById("chatTitle");
     const chatMetaEl = document.getElementById("chatMeta");
+    const resumeStripEl = document.getElementById("resumeStrip");
     const messagesEl = document.getElementById("messages");
     const promptInputEl = document.getElementById("promptInput");
     const mirrorToggleEl = document.getElementById("mirrorToggle");
@@ -662,6 +695,33 @@ def _render_chat_html(settings: Settings) -> str:
       chatIdInputEl.value = String(chatId);
       refreshChatList();
       refreshChat();
+    }}
+
+    async function copyText(value) {{
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        await navigator.clipboard.writeText(value);
+        return;
+      }}
+      window.prompt("Copy command:", value);
+    }}
+
+    function renderResumeTargets(items) {{
+      if (!items || items.length === 0) {{
+        resumeStripEl.innerHTML = "";
+        return;
+      }}
+      resumeStripEl.innerHTML = items.map(item => `
+        <section class="resume-card">
+          <div><strong>${{escapeHtml(item.provider)}}</strong> · ${{escapeHtml(item.bot)}}</div>
+          <div class="subtle">${{escapeHtml(item.cwd || "")}}</div>
+          <button type="button" data-command="${{escapeHtml(item.command)}}">Copy resume command</button>
+        </section>
+      `).join("");
+      for (const button of resumeStripEl.querySelectorAll("button[data-command]")) {{
+        button.addEventListener("click", async () => {{
+          await copyText(button.getAttribute("data-command") || "");
+        }});
+      }}
     }}
 
     async function refreshChatList() {{
@@ -691,6 +751,7 @@ def _render_chat_html(settings: Settings) -> str:
       const payload = await response.json();
       chatTitleEl.textContent = `Chat ${{payload.chat_id}}`;
       chatMetaEl.textContent = `cwd: ${{payload.cwd || "unknown"}} · session: ${{payload.session_id || "none"}}${{payload.pending_approval ? " · pending approval" : ""}}`;
+      renderResumeTargets(payload.resume_targets || []);
       const messageKey = payload.messages.map(item => item.id).join(",");
       if (messageKey === state.lastMessageKey) {{
         return;

@@ -186,6 +186,38 @@ class TestConfig:
         issues = config.validate()
         assert any("Vault path" in issue for issue in issues)
 
+    def test_load_or_bootstrap_creates_config_from_example(self, tmp_path: Any) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        example = config_dir / "settings.example.yaml"
+        example.write_text(
+            "vault:\n  path: /path/to/your/obsidian/vault\nstt:\n  adapter: faster_whisper\n",
+            encoding="utf-8",
+        )
+
+        config = Config.load_or_bootstrap(config_dir / "settings.yaml", interactive=False)
+
+        assert (config_dir / "settings.yaml").exists()
+        assert str(config.vault_path) == "/path/to/your/obsidian/vault"
+
+    def test_load_or_bootstrap_prompts_for_vault_path(self, tmp_path: Any, monkeypatch: Any) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config_path = config_dir / "settings.yaml"
+        config_path.write_text(
+            "vault:\n  path: /path/to/your/obsidian/vault\n",
+            encoding="utf-8",
+        )
+
+        vault_dir = tmp_path / "MyVault"
+        vault_dir.mkdir()
+        monkeypatch.setattr("builtins.input", lambda _: str(vault_dir))
+
+        config = Config.load_or_bootstrap(config_path, interactive=True)
+
+        assert config.vault_path == vault_dir.resolve()
+        assert str(vault_dir.resolve()) in config_path.read_text(encoding="utf-8")
+
 
 # --- Obsidian Store Tests (using temp dir) ---
 

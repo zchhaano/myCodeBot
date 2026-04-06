@@ -39,8 +39,13 @@ pip install faster-whisper pyyaml
 
 ```bash
 cp config/settings.example.yaml config/settings.yaml
-# Edit settings.yaml — set your vault path and STT preferences
+# Or just run a script once and it will prompt for the vault path on first run
 ```
+
+On first interactive run, the CLI will:
+- create `config/settings.yaml` from `config/settings.example.yaml` if missing
+- prompt you for the Obsidian vault path if `vault.path` is blank, placeholder, or invalid
+- save the chosen path back into `config/settings.yaml`
 
 ### 3. Test with Sample Event
 

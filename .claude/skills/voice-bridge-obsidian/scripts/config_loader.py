@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +104,22 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _default_config_candidates(base_dir: Path | None = None) -> list[Path]:
+    skill_root = base_dir or Path(__file__).resolve().parent.parent
+    return [
+        skill_root / "config" / "settings.yaml",
+        Path.cwd() / "config" / "settings.yaml",
+    ]
+
+
+def _example_config_for(config_path: Path) -> Path:
+    return config_path.with_name("settings.example.yaml")
+
+
+def _normalize_vault_path(raw: str) -> Path:
+    return Path(raw).expanduser().resolve()
+
+
 class Config:
     """Application configuration loaded from YAML with env var overrides."""
 
@@ -142,6 +160,101 @@ class Config:
             data["actions"]["safe_mode"] = safe_mode.lower() in ("true", "1", "yes")
 
         return cls(data)
+
+    @classmethod
+    def load_or_bootstrap(
+        cls,
+        config_path: str | Path | None = None,
+        *,
+        interactive: bool | None = None,
+    ) -> Config:
+        """Load config and guide the user through first-run setup when possible."""
+        resolved_path = cls._resolve_config_path(config_path)
+        should_prompt = interactive if interactive is not None else (
+            sys.stdin.isatty() and sys.stdout.isatty()
+        )
+
+        if resolved_path and not resolved_path.exists():
+            example_path = _example_config_for(resolved_path)
+            if example_path.exists():
+                resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(example_path, resolved_path)
+                print(
+                    f"Created config from template: {resolved_path}",
+                    file=sys.stderr,
+                )
+
+        config = cls.load(resolved_path)
+
+        if should_prompt and not os.getenv("OBSIDIAN_VAULT_PATH"):
+            prompted = cls._prompt_for_vault_path(config, resolved_path)
+            if prompted is not None:
+                config = cls.load(resolved_path)
+
+        return config
+
+    @staticmethod
+    def _resolve_config_path(config_path: str | Path | None) -> Path | None:
+        if config_path is not None:
+            return Path(config_path).expanduser().resolve()
+        for candidate in _default_config_candidates():
+            if candidate.exists():
+                return candidate.resolve()
+        return _default_config_candidates()[0].resolve()
+
+    @classmethod
+    def _prompt_for_vault_path(cls, config: Config, config_path: Path | None) -> Path | None:
+        current = str(config.get("vault.path", "") or "").strip()
+        current_path = Path(current).expanduser() if current else None
+        needs_prompt = (
+            not current
+            or current == "/path/to/your/obsidian/vault"
+            or current_path is None
+            or not current_path.exists()
+        )
+        if not needs_prompt:
+            return None
+
+        print(
+            "Voice Bridge Obsidian first-run setup:",
+            file=sys.stderr,
+        )
+        if current:
+            print(
+                f"Configured vault path is missing or invalid: {current}",
+                file=sys.stderr,
+            )
+        prompt = "Enter your Obsidian vault path: "
+        while True:
+            raw = input(prompt).strip()
+            if not raw:
+                print("Vault path is required.", file=sys.stderr)
+                continue
+            candidate = _normalize_vault_path(raw)
+            if not candidate.exists():
+                print(f"Path does not exist: {candidate}", file=sys.stderr)
+                continue
+            if not candidate.is_dir():
+                print(f"Path is not a directory: {candidate}", file=sys.stderr)
+                continue
+            if config_path is not None:
+                cls._write_vault_path(config_path, candidate)
+                print(
+                    f"Saved vault path to {config_path}",
+                    file=sys.stderr,
+                )
+            return candidate
+
+    @staticmethod
+    def _write_vault_path(config_path: Path, vault_path: Path) -> None:
+        payload: dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as handle:
+                payload = yaml.safe_load(handle) or {}
+        vault = payload.setdefault("vault", {})
+        vault["path"] = str(vault_path)
+        with open(config_path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
 
     def get(self, dotpath: str, default: Any = None) -> Any:
         """Get a nested config value using dot notation.

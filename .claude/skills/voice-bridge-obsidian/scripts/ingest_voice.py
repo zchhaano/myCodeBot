@@ -155,19 +155,7 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="Path to settings.yaml")
     args = parser.parse_args()
 
-    # Load config
-    config_path = args.config
-    if config_path is None:
-        # Look in standard locations
-        for candidate in [
-            Path(__file__).parent.parent / "config" / "settings.yaml",
-            Path.cwd() / "config" / "settings.yaml",
-        ]:
-            if candidate.exists():
-                config_path = str(candidate)
-                break
-
-    config = Config.load(config_path)
+    config = Config.load_or_bootstrap(args.config)
     setup_logging(config)
 
     logger = logging.getLogger(__name__)

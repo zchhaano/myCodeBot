@@ -30,7 +30,7 @@ Scripts only do what Claude can't: audio transcription and file I/O.
 
 Before running any script, verify:
 
-1. **Config exists** — `config/settings.yaml` is present and valid (copy from `settings.example.yaml`)
+1. **Config exists** — `config/settings.yaml` is present and valid. On first interactive run, the scripts can create it from `settings.example.yaml` and prompt for `vault.path`
 2. **Vault path** — The configured Obsidian vault directory exists and is writable
 3. **Audio file** — The `audio_path` in the event JSON points to an existing file
 4. **STT backend** — The configured STT adapter (default: faster-whisper) is installed
@@ -172,7 +172,7 @@ For `command_request` and `reminder_request`: always write to Pending/, never ex
 
 ## Configuration
 
-Copy `config/settings.example.yaml` to `config/settings.yaml` and adjust.
+Copy `config/settings.example.yaml` to `config/settings.yaml` and adjust, or let the CLI bootstrap it on first interactive run.
 All paths, commands, and STT settings are read from config — nothing is hardcoded.
 
 Key config sections:

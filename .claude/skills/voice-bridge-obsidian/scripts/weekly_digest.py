@@ -261,18 +261,7 @@ def main() -> None:
         # Go back to Monday of current week
         start_date = today - timedelta(days=today.weekday())
 
-    # Load config
-    config_path = args.config
-    if config_path is None:
-        for candidate in [
-            Path(__file__).parent.parent / "config" / "settings.yaml",
-            Path.cwd() / "config" / "settings.yaml",
-        ]:
-            if candidate.exists():
-                config_path = str(candidate)
-                break
-
-    config = Config.load(config_path)
+    config = Config.load_or_bootstrap(args.config)
 
     # Setup logging
     log_dir = Path(config.get("logging.dir", "logs"))

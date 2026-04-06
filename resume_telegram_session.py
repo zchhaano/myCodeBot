@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from channel_keys import DEFAULT_CHANNEL, parse_conversation_key
 from config import Settings, _build_settings
 from session_store import SessionStore, SessionRecord
 
@@ -20,7 +21,7 @@ DEFAULT_BOTS_PATH = CONFIG_DIR / "bots.json"
 @dataclass(frozen=True)
 class ResumeTarget:
     settings: Settings
-    chat_id: int
+    chat_id: str
     record: SessionRecord
     command: list[str]
 
@@ -98,7 +99,7 @@ def _select_settings(settings_list: list[Settings], *, bot_name: str | None, pro
 
 def get_resume_target(
     *,
-    chat_id: int,
+    chat_id: str | int,
     bot_name: str | None = None,
     provider: str | None = None,
     settings_list: list[Settings] | None = None,
@@ -109,28 +110,31 @@ def get_resume_target(
     record = store.get(chat_id)
     if record is None:
         raise RuntimeError(
-            f"No Telegram session stored for chat_id={chat_id} in {settings.name} ({settings.provider})"
+            f"No stored session for conversation={chat_id} in {settings.name} ({settings.provider})"
         )
     return ResumeTarget(
         settings=settings,
-        chat_id=chat_id,
+        chat_id=str(chat_id),
         record=record,
         command=_build_resume_command(settings, record),
     )
 
 
-def get_resume_targets_for_chat(chat_id: int, settings_list: list[Settings] | None = None) -> list[ResumeTarget]:
+def get_resume_targets_for_chat(chat_id: str | int, settings_list: list[Settings] | None = None) -> list[ResumeTarget]:
     resolved_settings = settings_list or _load_runtime_settings()
+    ref = parse_conversation_key(chat_id)
     targets: list[ResumeTarget] = []
     for settings in resolved_settings:
         store = SessionStore(settings.session_store_path)
         record = store.get(chat_id)
+        if record is None and ref.channel == DEFAULT_CHANNEL:
+            record = store.get(ref.chat_id)
         if record is None:
             continue
         targets.append(
             ResumeTarget(
                 settings=settings,
-                chat_id=chat_id,
+                chat_id=str(chat_id),
                 record=record,
                 command=_build_resume_command(settings, record),
             )
@@ -142,7 +146,7 @@ def format_resume_target(target: ResumeTarget) -> str:
     return (
         f"bot: {target.settings.name}\n"
         f"provider: {target.settings.provider}\n"
-        f"chat_id: {target.chat_id}\n"
+        f"conversation: {target.chat_id}\n"
         f"session_id: {target.record.session_id}\n"
         f"cwd: {target.record.cwd}\n"
         f"command: {shlex.join(target.command)}"
@@ -186,24 +190,24 @@ def _print_session_list(settings_list: list[Settings]) -> int:
             continue
         found = True
         print(f"[{settings.name}] provider={settings.provider} sessions={settings.session_store_path}")
-        for chat_id, record in items:
+        for conversation_key, record in items:
             print(
-                f"  chat_id={chat_id} session_id={record.session_id} "
+                f"  conversation={conversation_key} session_id={record.session_id} "
                 f"updated_at={record.updated_at} cwd={record.cwd}"
             )
     if not found:
-        print("No stored Telegram sessions found.")
+        print("No stored bridge sessions found.")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Resume a Telegram bridge conversation in local Claude Code or Codex.",
+        description="Resume a bridge conversation in local Claude Code or Codex.",
     )
-    parser.add_argument("--list", action="store_true", help="List known Telegram chat sessions for all bots")
+    parser.add_argument("--list", action="store_true", help="List known bridge conversations for all bots")
     parser.add_argument("--bot", help="Bridge bot name, e.g. claude_bot or codex_bot")
     parser.add_argument("--provider", choices=["claude", "codex", "copilot"], help="Select by provider")
-    parser.add_argument("--chat-id", type=int, help="Telegram chat id to resume")
+    parser.add_argument("--chat-id", help="Conversation key to resume, e.g. telegram:12345 or whatsapp:491234")
     parser.add_argument("--exec", action="store_true", dest="exec_session", help="Exec into the interactive CLI")
     args = parser.parse_args()
 

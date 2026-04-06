@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from config import Settings
 
@@ -19,7 +19,7 @@ class MediaHandlerError(RuntimeError):
 class DownloadedMedia:
     path: Path
     mime_type: str | None
-    telegram_file_id: str
+    file_id: str
     caption: str
 
 
@@ -38,7 +38,7 @@ class MediaHandler:
     def build_image_prompt(self, media: DownloadedMedia) -> str:
         caption_block = media.caption.strip() or "(no caption)"
         return (
-            "The Telegram user sent an image.\n"
+            "The user sent an image.\n"
             f"Image path: {media.path}\n"
             f"MIME type: {media.mime_type or 'unknown'}\n"
             f"Caption: {caption_block}\n\n"
@@ -48,18 +48,30 @@ class MediaHandler:
 
     def build_voice_prompt(self, transcript: VoiceTranscript) -> str:
         return (
-            "The Telegram user sent a voice message.\n"
+            "The user sent a voice message.\n"
             f"Audio path: {transcript.media.path}\n"
             f"Transcription:\n{transcript.text.strip() or '(empty transcription)'}\n\n"
             "Please respond to the user based on the transcription above."
         )
 
-    def download(self, *, file_url: str, file_id: str, file_name: str, mime_type: str | None, caption: str) -> DownloadedMedia:
+    def download(
+        self,
+        *,
+        file_url: str,
+        file_id: str,
+        file_name: str,
+        mime_type: str | None,
+        caption: str,
+        headers: dict[str, str] | None = None,
+    ) -> DownloadedMedia:
         target_dir = self._root
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / file_name
         try:
-            with urlopen(file_url, timeout=60) as response, target_path.open("wb") as handle:
+            request = Request(file_url, method="GET")
+            for key, value in (headers or {}).items():
+                request.add_header(key, value)
+            with urlopen(request, timeout=60) as response, target_path.open("wb") as handle:
                 shutil.copyfileobj(response, handle)
         except HTTPError as exc:
             raise MediaHandlerError(f"Download failed with HTTP {exc.code}") from exc
@@ -69,7 +81,7 @@ class MediaHandler:
         return DownloadedMedia(
             path=target_path,
             mime_type=mime_type,
-            telegram_file_id=file_id,
+            file_id=file_id,
             caption=caption,
         )
 

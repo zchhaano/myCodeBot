@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from channel_keys import DEFAULT_CHANNEL, conversation_key_for_legacy_chat, make_conversation_key
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -29,7 +31,11 @@ class SessionStore:
         if not self._path.exists():
             return
         raw = json.loads(self._path.read_text(encoding="utf-8"))
-        self._data = {key: SessionRecord(**value) for key, value in raw.items()}
+        self._data = {}
+        for key, value in raw.items():
+            record = SessionRecord(**value)
+            normalized_key = self._normalize_key(key)
+            self._data[normalized_key] = record
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,20 +45,20 @@ class SessionStore:
             encoding="utf-8",
         )
 
-    def get(self, chat_id: int) -> SessionRecord | None:
+    def get(self, chat_id: str | int, *, channel: str = DEFAULT_CHANNEL) -> SessionRecord | None:
         with self._lock:
-            return self._data.get(str(chat_id))
+            return self._data.get(self._normalize_key(chat_id, channel=channel))
 
-    def set(self, chat_id: int, session_id: str, cwd: str) -> SessionRecord:
+    def set(self, chat_id: str | int, session_id: str, cwd: str, *, channel: str = DEFAULT_CHANNEL) -> SessionRecord:
         with self._lock:
             record = SessionRecord(session_id=session_id, cwd=cwd, updated_at=_utc_now_iso())
-            self._data[str(chat_id)] = record
+            self._data[self._normalize_key(chat_id, channel=channel)] = record
             self._save()
             return record
 
-    def clear(self, chat_id: int) -> bool:
+    def clear(self, chat_id: str | int, *, channel: str = DEFAULT_CHANNEL) -> bool:
         with self._lock:
-            removed = self._data.pop(str(chat_id), None)
+            removed = self._data.pop(self._normalize_key(chat_id, channel=channel), None)
             if removed is None:
                 return False
             self._save()
@@ -61,3 +67,10 @@ class SessionStore:
     def items(self) -> list[tuple[str, SessionRecord]]:
         with self._lock:
             return sorted(self._data.items(), key=lambda item: item[0])
+
+    @staticmethod
+    def _normalize_key(chat_id: str | int, *, channel: str = DEFAULT_CHANNEL) -> str:
+        raw = str(chat_id).strip()
+        if ":" in raw:
+            return raw
+        return make_conversation_key(channel, raw)

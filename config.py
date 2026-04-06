@@ -20,6 +20,7 @@ class Settings:
     telegram_bot_token: str
     claude_bin: str
     claude_workdir: Path
+    claude_allowed_workdirs: list[Path]
     claude_settings_file: Path | None
     claude_output_format: str
     claude_streaming: bool
@@ -51,6 +52,13 @@ class Settings:
     status_web_host: str
     status_web_port: int
     status_web_token: str | None
+    whatsapp_enabled: bool
+    whatsapp_verify_token: str | None
+    whatsapp_access_token: str | None
+    whatsapp_phone_number_id: str | None
+    whatsapp_api_base: str
+    whatsapp_webhook_host: str
+    whatsapp_webhook_port: int
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
@@ -71,6 +79,16 @@ def _resolve_path(raw: str | None, *, base_dir: Path, default: str) -> Path:
     return candidate.resolve()
 
 
+def _resolve_path_list(raw: str | None, *, base_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for item in _parse_csv(raw):
+        candidate = Path(item).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+        paths.append(candidate.resolve())
+    return paths
+
+
 def _build_settings(
     values: Mapping[str, str],
     *,
@@ -82,6 +100,7 @@ def _build_settings(
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
 
     workdir = _resolve_path(values.get("CLAUDE_WORKDIR"), base_dir=base_dir, default=os.getcwd())
+    allowed_workdirs = _resolve_path_list(values.get("CLAUDE_ALLOWED_WORKDIRS"), base_dir=base_dir)
     settings_file_raw = values.get("CLAUDE_SETTINGS_FILE", "").strip()
     settings_file = _resolve_path(settings_file_raw, base_dir=base_dir, default=".") if settings_file_raw else None
     output_format = values.get("CLAUDE_OUTPUT_FORMAT", "json").strip() or "json"
@@ -92,6 +111,7 @@ def _build_settings(
     claude_timeout_raw = values.get("CLAUDE_TIMEOUT_SECONDS", "300").strip() or "300"
     edit_interval_raw = values.get("TELEGRAM_EDIT_INTERVAL_SECONDS", "1.0").strip() or "1.0"
     status_web_port_raw = values.get("STATUS_WEB_PORT", "8765").strip() or "8765"
+    whatsapp_webhook_port_raw = values.get("WHATSAPP_WEBHOOK_PORT", "8877").strip() or "8877"
 
     return Settings(
         name=values.get("BRIDGE_NAME", "").strip() or default_name,
@@ -99,6 +119,7 @@ def _build_settings(
         telegram_bot_token=token,
         claude_bin=values.get("CLAUDE_BIN", "claude").strip() or "claude",
         claude_workdir=workdir,
+        claude_allowed_workdirs=allowed_workdirs,
         claude_settings_file=settings_file,
         claude_output_format=output_format,
         claude_streaming=_parse_bool(values.get("CLAUDE_STREAMING"), default=False),
@@ -145,6 +166,16 @@ def _build_settings(
         status_web_host=values.get("STATUS_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
         status_web_port=max(1, int(status_web_port_raw)),
         status_web_token=values.get("STATUS_WEB_TOKEN", "").strip() or None,
+        whatsapp_enabled=_parse_bool(values.get("WHATSAPP_ENABLED"), default=False),
+        whatsapp_verify_token=values.get("WHATSAPP_VERIFY_TOKEN", "").strip() or None,
+        whatsapp_access_token=values.get("WHATSAPP_ACCESS_TOKEN", "").strip() or None,
+        whatsapp_phone_number_id=values.get("WHATSAPP_PHONE_NUMBER_ID", "").strip() or None,
+        whatsapp_api_base=(
+            values.get("WHATSAPP_API_BASE", "https://graph.facebook.com/v22.0").strip()
+            or "https://graph.facebook.com/v22.0"
+        ).rstrip("/"),
+        whatsapp_webhook_host=values.get("WHATSAPP_WEBHOOK_HOST", "127.0.0.1").strip() or "127.0.0.1",
+        whatsapp_webhook_port=max(1, int(whatsapp_webhook_port_raw)),
     )
 
 

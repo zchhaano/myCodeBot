@@ -17,6 +17,8 @@ It currently supports:
 - multi-bot mode
 - text, image, and voice messages
 - per-chat project directories
+- experimental WhatsApp webhook ingress
+- local web chat with channel-aware conversation history
 
 The tutorial below starts from zero and ends with multiple Telegram bots talking to local Claude Code, Codex, and GitHub Copilot CLI on the same machine.
 
@@ -30,6 +32,7 @@ Before you start, make sure this machine already has:
 - `node` on `PATH` if your Claude hooks need it
 - `whisper` on `PATH` if you want voice transcription
 - at least one Telegram bot token from BotFather
+- a Meta WhatsApp Cloud API app if you want WhatsApp
 
 Important:
 - This bridge does not install Claude, Codex, or Whisper for you.
@@ -86,6 +89,13 @@ COPILOT_USE_GH=true
 Important safety rule:
 - `CLAUDE_WORKDIR` is the default workspace root.
 - Per-chat `/project` switching is allowed only inside this root.
+- Extra roots can be allowed via `CLAUDE_ALLOWED_WORKDIRS` as a comma-separated list.
+
+Example:
+```bash
+CLAUDE_WORKDIR=~/projects/claudeBot
+CLAUDE_ALLOWED_WORKDIRS=~/projects/ObsidianVaults,~/projects/other-root
+```
 
 ### 4. Start The Bridge
 
@@ -177,6 +187,12 @@ What `/project` does:
 What it does not allow:
 - switching outside the configured default `CLAUDE_WORKDIR`
 - using arbitrary paths like `/etc`
+
+If you configure extra allowed roots, `/project` can also switch inside those roots:
+
+```bash
+CLAUDE_ALLOWED_WORKDIRS=~/projects/ObsidianVaults,~/projects/other-root
+```
 
 To return to the default root:
 
@@ -377,7 +393,56 @@ Then access with:
 - `Authorization: Bearer your_secret`
 - or `?token=your_secret`
 
-### 13. Common Problems
+The local chat page now uses channel-scoped conversation ids:
+- `telegram:<chat_id>`
+- `whatsapp:<phone_or_sender_id>`
+
+These show up in:
+- `/resume_local`
+- `python3 resume_telegram_session.py --chat-id telegram:123456`
+- the `/chat` page input box
+
+### 13. WhatsApp Setup
+
+WhatsApp support is optional and can run alongside Telegram.
+
+Add these env vars to the target bot:
+
+```bash
+WHATSAPP_ENABLED=true
+WHATSAPP_VERIFY_TOKEN=your_verify_token
+WHATSAPP_ACCESS_TOKEN=your_permanent_access_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+WHATSAPP_WEBHOOK_HOST=127.0.0.1
+WHATSAPP_WEBHOOK_PORT=8877
+```
+
+What this means:
+- the bridge starts a local webhook server at `http://127.0.0.1:8877/whatsapp/webhook`
+- Meta must reach that endpoint through your own HTTPS reverse proxy or tunnel
+- incoming WhatsApp text, image, and audio events reuse the same bridge core as Telegram
+- unsupported WhatsApp message types are ignored or answered with a simple fallback message
+
+Recommended deployment model:
+- keep the bridge listening on localhost
+- publish only the WhatsApp webhook path through Caddy, Nginx, Cloudflare Tunnel, or another HTTPS ingress
+- keep the local status/chat UI protected with `STATUS_WEB_TOKEN`
+
+Restart after enabling:
+
+```bash
+systemctl --user restart telegram-claude-bridge.service
+```
+
+To disable WhatsApp again without affecting Telegram:
+
+```bash
+WHATSAPP_ENABLED=false
+```
+
+Then restart the bridge. Telegram and the local web UI will continue to work.
+
+### 14. Common Problems
 
 `claude exited with code 1`
 - check `CLAUDE_BIN`
@@ -404,13 +469,24 @@ Two bots behave strangely in multi-bot mode
 - confirm they do not reuse the same Telegram token
 - confirm they do not share the same status port
 
-### 14. Security Notes
+WhatsApp webhook validation fails
+- confirm `WHATSAPP_VERIFY_TOKEN` matches the token configured in Meta
+- confirm Meta can reach your public HTTPS webhook URL
+- confirm your reverse proxy forwards requests to `WHATSAPP_WEBHOOK_HOST:WHATSAPP_WEBHOOK_PORT`
+
+WhatsApp replies fail
+- confirm `WHATSAPP_ACCESS_TOKEN` is still valid
+- confirm `WHATSAPP_PHONE_NUMBER_ID` belongs to the connected app
+- inspect bridge logs for Graph API error payloads
+
+### 15. Security Notes
 
 - Keep `CLAUDE_WORKDIR` narrow
 - expose the bot only to trusted Telegram users unless you have stronger controls
 - use `/approve_always` carefully
 - use `/approve_bypass` even more carefully
 - rotate Telegram bot tokens if they were ever exposed in chat logs
+- treat `WHATSAPP_ACCESS_TOKEN` like a production secret
 
 ---
 
@@ -429,6 +505,8 @@ Two bots behave strangely in multi-bot mode
 - 多 bot 模式
 - 文本、图片、语音
 - 每个 Telegram chat 独立项目目录
+- 实验性的 WhatsApp webhook 接入
+- 支持按 channel 区分会话的本地网页聊天
 
 下面这份教程按“从零开始”写，一步一步带你做到：
 - 先跑通单 bot
@@ -445,6 +523,7 @@ Two bots behave strangely in multi-bot mode
 - 如果 Claude hook 需要 Node，就要保证 `node` 在 `PATH`
 - 如果要转写语音，要有 `whisper`
 - 至少一个 Telegram bot token
+- 如果要接 WhatsApp，还要有 Meta WhatsApp Cloud API 应用
 
 注意：
 - 这个 bridge 不会帮你自动安装 Claude、Codex 或 Whisper
@@ -501,6 +580,13 @@ COPILOT_USE_GH=true
 安全边界要记住：
 - `CLAUDE_WORKDIR` 是默认工作区根目录
 - Telegram 里的 `/project` 只能切换到这个根目录下面的子目录
+- 如果要放行额外根目录，可以用 `CLAUDE_ALLOWED_WORKDIRS`，多个目录用逗号分隔
+
+例如：
+```bash
+CLAUDE_WORKDIR=~/projects/claudeBot
+CLAUDE_ALLOWED_WORKDIRS=~/projects/ObsidianVaults,~/projects/other-root
+```
 
 ### 4. 启动 bridge
 
@@ -592,6 +678,12 @@ CLAUDE_WORKDIR=~/projects
 `/project` 不允许做的事：
 - 切到默认 `CLAUDE_WORKDIR` 之外
 - 切到像 `/etc` 这样的任意系统目录
+
+如果你配置了额外允许根目录，`/project` 也可以切到这些目录下面：
+
+```bash
+CLAUDE_ALLOWED_WORKDIRS=~/projects/ObsidianVaults,~/projects/other-root
+```
 
 如果要回到默认目录：
 
@@ -795,7 +887,56 @@ STATUS_WEB_TOKEN=你的密钥
 - `Authorization: Bearer 你的密钥`
 - 或 `?token=你的密钥`
 
-### 13. 常见问题
+本地聊天页现在使用带 channel 的会话 id：
+- `telegram:<chat_id>`
+- `whatsapp:<手机号或发送方 id>`
+
+这些地方都会用到：
+- `/resume_local`
+- `python3 resume_telegram_session.py --chat-id telegram:123456`
+- `/chat` 页面的输入框
+
+### 13. 配置 WhatsApp
+
+WhatsApp 是可选入口，可以和 Telegram 同时启用。
+
+给目标 bot 增加这些环境变量：
+
+```bash
+WHATSAPP_ENABLED=true
+WHATSAPP_VERIFY_TOKEN=你的_verify_token
+WHATSAPP_ACCESS_TOKEN=你的长期_access_token
+WHATSAPP_PHONE_NUMBER_ID=你的_phone_number_id
+WHATSAPP_WEBHOOK_HOST=127.0.0.1
+WHATSAPP_WEBHOOK_PORT=8877
+```
+
+含义是：
+- bridge 会在 `http://127.0.0.1:8877/whatsapp/webhook` 启动本地 webhook
+- Meta 需要通过你自己的 HTTPS 反向代理或 tunnel 访问这个地址
+- WhatsApp 的文本、图片、音频会复用和 Telegram 一样的 bridge core
+- 暂不支持的 WhatsApp 消息类型会被忽略或返回简单提示
+
+推荐部署方式：
+- bridge 继续只监听 localhost
+- 只把 WhatsApp webhook 这一个路径通过 Caddy、Nginx、Cloudflare Tunnel 等方式暴露成 HTTPS
+- 本地状态页和聊天页继续配合 `STATUS_WEB_TOKEN` 使用
+
+启用后重启：
+
+```bash
+systemctl --user restart telegram-claude-bridge.service
+```
+
+如果想回滚并关闭 WhatsApp，同时不影响 Telegram：
+
+```bash
+WHATSAPP_ENABLED=false
+```
+
+然后重启 bridge。Telegram 和本地网页仍然可以继续用。
+
+### 14. 常见问题
 
 `claude exited with code 1`
 - 检查 `CLAUDE_BIN`
@@ -822,10 +963,21 @@ Telegram 里的命令菜单没刷新
 - 先确认没有复用同一个 Telegram token
 - 再确认状态页端口没有冲突
 
-### 14. 安全提醒
+WhatsApp webhook 验证失败
+- 确认 `WHATSAPP_VERIFY_TOKEN` 和 Meta 后台配置一致
+- 确认 Meta 能访问你的公网 HTTPS webhook 地址
+- 确认反向代理把请求转发到了 `WHATSAPP_WEBHOOK_HOST:WHATSAPP_WEBHOOK_PORT`
+
+WhatsApp 回复失败
+- 确认 `WHATSAPP_ACCESS_TOKEN` 还有效
+- 确认 `WHATSAPP_PHONE_NUMBER_ID` 属于当前接入的应用
+- 看 bridge 日志里的 Graph API 报错细节
+
+### 15. 安全提醒
 
 - `CLAUDE_WORKDIR` 尽量设小，不要放太宽
 - 如果 Telegram 用户不是完全可信，不要随便放大权限
 - `/approve_always` 要谨慎
 - `/approve_bypass` 更要谨慎
 - 如果 token 曾出现在聊天记录里，建议去 BotFather 旋转
+- `WHATSAPP_ACCESS_TOKEN` 也要按生产密钥对待

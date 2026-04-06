@@ -14,7 +14,9 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from approval_state import ApprovalState, PendingApproval
+from bridge_core import BridgeCore, SentMessage
 from bridge_runner import BridgeRunner, RunnerError, RunnerResponse
+from channel_keys import ConversationRef, parse_conversation_key
 from chat_log import ChatLogStore
 from claude_runner import format_text_reply
 from config import Settings, load_all_settings
@@ -26,6 +28,7 @@ from runner_factory import build_runner
 from session_store import SessionStore
 from status_web import start_status_server
 from version_info import get_version_snapshot
+from whatsapp_adapter import WhatsAppAdapter
 from workdir_store import WorkdirStore
 
 
@@ -55,6 +58,8 @@ class TelegramAPIError(RuntimeError):
 
 
 class TelegramBot:
+    can_edit_messages = True
+
     def __init__(
         self,
         settings: Settings,
@@ -77,10 +82,28 @@ class TelegramBot:
         self._workdirs = workdirs
         self._chat_log = chat_log
         self._offset = 0
-        self._chat_locks: defaultdict[int, threading.Lock] = defaultdict(threading.Lock)
+        self._core = BridgeCore(
+            settings,
+            store,
+            runner,
+            media_handler,
+            runtime_state,
+            version_info,
+            approvals,
+            workdirs,
+            chat_log,
+            self,
+        )
 
     def _provider_label(self) -> str:
         return self._settings.provider
+
+    def help_channel_label(self) -> str:
+        return "Telegram"
+
+    @property
+    def core(self) -> BridgeCore:
+        return self._core
 
     def _help_text(self) -> str:
         return (
@@ -159,15 +182,13 @@ class TelegramBot:
     def _handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message") or {}
         chat = message.get("chat") or {}
-        text = (message.get("text") or "").strip()
         chat_id = chat.get("id")
 
         if not chat_id:
             return
 
         self._runtime_state.record_message()
-        with self._chat_locks[chat_id]:
-            self._dispatch_message(chat_id=chat_id, message=message)
+        self._dispatch_message(chat_id=chat_id, message=message)
 
     def _dispatch_message(self, chat_id: int, message: dict[str, Any]) -> None:
         text = (message.get("text") or "").strip()
@@ -200,82 +221,7 @@ class TelegramBot:
         self._send_message(chat_id, "暂不支持这种消息类型。目前支持文本、图片和语音。")
 
     def _dispatch_text(self, chat_id: int, text: str) -> None:
-        if text.startswith("/start"):
-            self._send_message(chat_id, self._help_text())
-            return
-
-        if text.startswith("/help"):
-            self._send_message(chat_id, self._help_text())
-            return
-
-        if text.startswith("/status"):
-            self._send_message(chat_id, self._build_status_text(chat_id))
-            return
-
-        if text.startswith("/health"):
-            self._send_message(chat_id, self._build_health_text())
-            return
-
-        if text.startswith("/version"):
-            self._send_message(chat_id, self._build_version_text())
-            return
-
-        if text.startswith("/clear"):
-            self._send_message(
-                chat_id,
-                "已清除当前会话。" if self._store.clear(chat_id) else "当前没有可清除的会话。",
-            )
-            self._approvals.clear(chat_id)
-            return
-
-        if text.startswith("/project_status"):
-            self._send_message(chat_id, self._build_project_status_text(chat_id))
-            return
-
-        if text.startswith("/project"):
-            self._dispatch_project_command(chat_id, text)
-            return
-
-        if text.startswith("/resume_local"):
-            self._dispatch_resume_local(chat_id, text)
-            return
-
-        if text.startswith("/approve_bypass") or text.startswith("/approve-bypass"):
-            self._dispatch_set_always_mode(chat_id, permission_mode="bypassPermissions", label="bypassPermissions")
-            return
-
-        if text.startswith("/approve_always") or text.startswith("/approve-always"):
-            self._dispatch_approve_always(chat_id)
-            return
-
-        if text.startswith("/approve_manual") or text.startswith("/approve-manual"):
-            cleared = self._approvals.clear_always_mode(chat_id)
-            self._send_message(
-                chat_id,
-                "已关闭自动批准，后续权限请求将再次等待 /approve。"
-                if cleared
-                else "当前没有开启自动批准。",
-            )
-            return
-
-        if text.startswith("/approve"):
-            self._dispatch_approval(chat_id)
-            return
-
-        if text.startswith("/deny"):
-            cleared = self._approvals.clear(chat_id)
-            self._send_message(
-                chat_id,
-                "已拒绝本次待授权操作。" if cleared else "当前没有待授权操作。",
-            )
-            return
-
-        self._log_message(chat_id=chat_id, role="user", source="telegram", text=text)
-        self._run_prompt(
-            chat_id=chat_id,
-            prompt=text,
-            start_text=f"请求已收到，正在调用本机 {self._provider_label()}…",
-        )
+        self._core.process_text(ConversationRef(channel="telegram", chat_id=str(chat_id)), text)
 
     def _dispatch_photo(self, chat_id: int, message: dict[str, Any]) -> None:
         photos = message.get("photo") or []
@@ -285,8 +231,9 @@ class TelegramBot:
             self._send_message(chat_id, "图片消息缺少 file_id。")
             return
         caption = (message.get("caption") or "").strip()
-        self._log_message(
-            chat_id=chat_id,
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._core.log_message(
+            conversation,
             role="user",
             source="telegram",
             text=caption or "[Telegram image]",
@@ -299,8 +246,8 @@ class TelegramBot:
                 mime_type="image/jpeg",
             )
             prompt = self._media_handler.build_image_prompt(media)
-            self._run_prompt(
-                chat_id=chat_id,
+            self._core.run_prompt(
+                conversation,
                 prompt=prompt,
                 start_text=None,
                 image_paths=[str(media.path)] if self._settings.provider == "codex" else None,
@@ -315,8 +262,9 @@ class TelegramBot:
             self._send_message(chat_id, "图片文件缺少 file_id。")
             return
         caption = (message.get("caption") or "").strip()
-        self._log_message(
-            chat_id=chat_id,
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._core.log_message(
+            conversation,
             role="user",
             source="telegram",
             text=caption or "[Telegram image document]",
@@ -330,8 +278,8 @@ class TelegramBot:
                 original_name=document.get("file_name"),
             )
             prompt = self._media_handler.build_image_prompt(media)
-            self._run_prompt(
-                chat_id=chat_id,
+            self._core.run_prompt(
+                conversation,
                 prompt=prompt,
                 start_text=None,
                 image_paths=[str(media.path)] if self._settings.provider == "codex" else None,
@@ -345,8 +293,9 @@ class TelegramBot:
             self._send_message(chat_id, "语音消息缺少 file_id。")
             return
         caption = (message.get("caption") or "").strip()
-        self._log_message(
-            chat_id=chat_id,
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._core.log_message(
+            conversation,
             role="user",
             source="telegram",
             text=caption or "[Telegram voice]",
@@ -360,15 +309,15 @@ class TelegramBot:
                 original_name=payload.get("file_name"),
             )
             transcript = self._media_handler.transcribe_voice(media)
-            self._log_message(
-                chat_id=chat_id,
+            self._core.log_message(
+                conversation,
                 role="user",
                 source="telegram",
                 text=f"[Voice transcript]\n{transcript.text.strip() or '(empty transcription)'}",
             )
             self._send_message(chat_id, f"语音已转写，正在转交给 {self._provider_label()}…")
             prompt = self._media_handler.build_voice_prompt(transcript)
-            self._run_prompt(chat_id=chat_id, prompt=prompt, start_text=None)
+            self._core.run_prompt(conversation, prompt=prompt, start_text=None)
         except MediaHandlerError as exc:
             self._send_message(chat_id, f"语音处理失败:\n{exc}")
 
@@ -745,12 +694,14 @@ class TelegramBot:
 
     def _build_project_status_text(self, chat_id: int) -> str:
         project_override = self._workdirs.get(chat_id)
+        allowed_roots = [str(path) for path in self._allowed_project_roots()]
         return "\n".join(
             [
             "当前项目目录状态:",
             f"bot: {self._settings.name}",
             f"provider: {self._provider_label()}",
             f"default_workdir: {self._settings.claude_workdir}",
+            f"allowed_roots: {', '.join(allowed_roots)}",
             f"chat_workdir: {project_override or 'not set'}",
                 f"effective_workdir: {self._effective_workdir(chat_id)}",
             ]
@@ -785,20 +736,19 @@ class TelegramBot:
             )
             return
 
-        base_workdir = self._settings.claude_workdir.resolve()
         candidate = Path(raw_target).expanduser()
         if not candidate.is_absolute():
             candidate = (self._effective_workdir(chat_id) / candidate).resolve()
         else:
             candidate = candidate.resolve()
 
-        try:
-            candidate.relative_to(base_workdir)
-        except ValueError:
+        matched_root = self._find_allowed_project_root(candidate)
+        if matched_root is None:
+            allowed_roots = "\n".join(f"- {path}" for path in self._allowed_project_roots())
             self._send_message(
                 chat_id,
-                "项目目录必须位于默认工作区范围内。\n"
-                f"allowed_root: {base_workdir}\n"
+                "项目目录必须位于允许的工作区范围内。\n"
+                f"allowed_roots:\n{allowed_roots}\n"
                 f"requested: {candidate}",
             )
             return
@@ -819,9 +769,27 @@ class TelegramBot:
         self._send_message(
             chat_id,
             "已切换当前 chat 的项目目录，并清除旧会话。\n"
+            f"allowed_root: {matched_root}\n"
             f"workdir: {candidate}\n"
             "现在可以直接让机器人在这个目录里开始新项目。",
         )
+
+    def _allowed_project_roots(self) -> list[Path]:
+        roots = [self._settings.claude_workdir.resolve()]
+        for path in self._settings.claude_allowed_workdirs:
+            resolved = path.resolve()
+            if resolved not in roots:
+                roots.append(resolved)
+        return roots
+
+    def _find_allowed_project_root(self, candidate: Path) -> Path | None:
+        for root in self._allowed_project_roots():
+            try:
+                candidate.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return None
 
     def _dispatch_resume_local(self, chat_id: int, text: str) -> None:
         parts = text.split(maxsplit=1)
@@ -865,6 +833,33 @@ class TelegramBot:
         }
         response = self._call("editMessageText", payload)
         return response.get("result", {})
+
+    def send_message(self, conversation: ConversationRef, text: str, role: str = "system") -> SentMessage | None:
+        payload = {
+            "chat_id": conversation.chat_id,
+            "text": text,
+        }
+        response = self._call("sendMessage", payload)
+        result = response.get("result", {})
+        message_id = result.get("message_id")
+        return SentMessage(message_id=str(message_id) if message_id is not None else None, raw=result)
+
+    def edit_message(
+        self,
+        conversation: ConversationRef,
+        message_id: str,
+        text: str,
+        role: str = "system",
+    ) -> SentMessage | None:
+        payload = {
+            "chat_id": conversation.chat_id,
+            "message_id": str(message_id),
+            "text": text,
+        }
+        response = self._call("editMessageText", payload)
+        result = response.get("result", {})
+        returned_id = result.get("message_id", message_id)
+        return SentMessage(message_id=str(returned_id) if returned_id is not None else None, raw=result)
 
     def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         query = urlencode(payload).encode("utf-8")
@@ -922,39 +917,13 @@ class TelegramBot:
             return
         self._chat_log.append(chat_id=chat_id, role=role, source=source, text=clean)
 
-    def submit_web_prompt(self, chat_id: int, prompt: str, *, mirror_to_telegram: bool = True) -> None:
-        worker = threading.Thread(
-            target=self._run_web_prompt,
-            args=(chat_id, prompt, mirror_to_telegram),
-            name=f"web-chat-{chat_id}",
-            daemon=True,
-        )
-        worker.start()
+    def submit_web_prompt(self, chat_id: str | int, prompt: str, *, mirror_to_telegram: bool = True) -> None:
+        conversation = parse_conversation_key(chat_id)
+        self._core.submit_web_prompt(conversation, prompt, mirror_to_channel=mirror_to_telegram)
 
-    def _run_web_prompt(self, chat_id: int, prompt: str, mirror_to_telegram: bool) -> None:
-        clean = prompt.strip()
-        if not clean:
-            return
-
-        with self._chat_locks[chat_id]:
-            self._runtime_state.record_message()
-            self._log_message(chat_id=chat_id, role="user", source="web", text=clean)
-            if mirror_to_telegram:
-                try:
-                    payload = {
-                        "chat_id": str(chat_id),
-                        "text": f"[Desktop] {clean}",
-                    }
-                    self._call("sendMessage", payload)
-                except TelegramAPIError as exc:
-                    LOGGER.exception("Failed to mirror desktop message to Telegram chat %s", chat_id)
-                    self._log_message(
-                        chat_id=chat_id,
-                        role="system",
-                        source="bridge",
-                        text=f"Desktop message mirror failed:\n{exc}",
-                    )
-            self._run_prompt(chat_id=chat_id, prompt=clean, start_text=None)
+    def _run_web_prompt(self, chat_id: str | int, prompt: str, mirror_to_telegram: bool) -> None:
+        conversation = parse_conversation_key(chat_id)
+        self._core.submit_web_prompt(conversation, prompt, mirror_to_channel=mirror_to_telegram)
 
 
 def main() -> None:
@@ -1017,6 +986,8 @@ def _run_single_bot(settings: Settings) -> None:
             chat_log,
             bot.submit_web_prompt,
         )
+    if settings.whatsapp_enabled:
+        WhatsAppAdapter(settings, bot.core).start()
     bot.run_forever()
 
 

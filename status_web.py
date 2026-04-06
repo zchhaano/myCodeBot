@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from channel_keys import ConversationRef, parse_conversation_key
 from chat_log import ChatLogStore
 from config import Settings
 from codex_usage import load_codex_usage
@@ -78,11 +79,14 @@ def _build_handler(
                 self._send_json(_chat_list_payload(store, workdirs, approvals, chat_log))
                 return
             if parsed.path == "/api/chat":
-                chat_id = _parse_chat_id(parse_qs(parsed.query).get("chat_id", [None])[0])
-                if chat_id is None:
-                    self.send_error(400, "Missing or invalid chat_id")
+                conversation = _parse_conversation(
+                    parse_qs(parsed.query).get("conversation_key", [None])[0],
+                    parse_qs(parsed.query).get("chat_id", [None])[0],
+                )
+                if conversation is None:
+                    self.send_error(400, "Missing or invalid conversation_key")
                     return
-                self._send_json(_chat_payload(chat_id, store, workdirs, approvals, chat_log))
+                self._send_json(_chat_payload(conversation, store, workdirs, approvals, chat_log))
                 return
             if parsed.path == "/":
                 self._send_html(
@@ -106,15 +110,15 @@ def _build_handler(
                 return
 
             payload = self._read_json_body()
-            chat_id = _parse_chat_id(payload.get("chat_id"))
+            conversation = _parse_conversation(payload.get("conversation_key"), payload.get("chat_id"))
             prompt = str(payload.get("prompt") or "").strip()
             mirror_to_telegram = bool(payload.get("mirror_to_telegram", True))
-            if chat_id is None or not prompt:
-                self.send_error(400, "chat_id and prompt are required")
+            if conversation is None or not prompt:
+                self.send_error(400, "conversation_key and prompt are required")
                 return
 
-            submit_prompt(chat_id, prompt, mirror_to_telegram=mirror_to_telegram)
-            self._send_json({"ok": True, "chat_id": chat_id, "queued": True})
+            submit_prompt(conversation.key, prompt, mirror_to_telegram=mirror_to_telegram)
+            self._send_json({"ok": True, "conversation_key": conversation.key, "queued": True})
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             LOGGER.info("%s - %s", self.address_string(), format % args)
@@ -180,11 +184,14 @@ def _status_payload(
 ) -> dict[str, Any]:
     snapshot = runtime_state.snapshot()
     sessions = []
-    for chat_id, record in store.items():
+    for conversation_key, record in store.items():
+        conversation = parse_conversation_key(conversation_key)
         usage = load_codex_usage(record.session_id) if settings.provider == "codex" else None
         sessions.append(
             {
-                "chat_id": chat_id,
+                "conversation_key": conversation.key,
+                "channel": conversation.channel,
+                "chat_id": conversation.chat_id,
                 "session_id": record.session_id,
                 "cwd": record.cwd,
                 "updated_at": record.updated_at,
@@ -217,18 +224,26 @@ def _status_payload(
             },
         },
         "version": version_info,
-        "workdir_overrides": [{"chat_id": chat_id, "cwd": cwd} for chat_id, cwd in workdirs.items()],
+        "workdir_overrides": [
+            {
+                "conversation_key": parse_conversation_key(conversation_key).key,
+                "channel": parse_conversation_key(conversation_key).channel,
+                "chat_id": parse_conversation_key(conversation_key).chat_id,
+                "cwd": cwd,
+            }
+            for conversation_key, cwd in workdirs.items()
+        ],
         "sessions": sessions,
         "session_count": len(sessions),
-        "chat_count": len(_known_chat_ids(store, workdirs, chat_log)),
+        "chat_count": len(_known_conversations(store, workdirs, chat_log)),
     }
 
 
-def _known_chat_ids(store: SessionStore, workdirs: WorkdirStore, chat_log: ChatLogStore) -> list[int]:
-    chat_ids = {int(chat_id) for chat_id, _ in store.items()}
-    chat_ids.update(int(chat_id) for chat_id, _ in workdirs.items())
-    chat_ids.update(chat_log.chat_ids())
-    return sorted(chat_ids)
+def _known_conversations(store: SessionStore, workdirs: WorkdirStore, chat_log: ChatLogStore) -> list[ConversationRef]:
+    keys = {conversation_key for conversation_key, _ in store.items()}
+    keys.update(conversation_key for conversation_key, _ in workdirs.items())
+    keys.update(chat_log.conversation_keys())
+    return sorted((parse_conversation_key(key) for key in keys), key=lambda item: item.key)
 
 
 def _chat_list_payload(
@@ -238,46 +253,52 @@ def _chat_list_payload(
     chat_log: ChatLogStore,
 ) -> dict[str, Any]:
     chats = []
-    for chat_id in _known_chat_ids(store, workdirs, chat_log):
-        record = store.get(chat_id)
+    for conversation in _known_conversations(store, workdirs, chat_log):
+        record = store.get(conversation.key)
         chats.append(
             {
-                "chat_id": chat_id,
+                "conversation_key": conversation.key,
+                "channel": conversation.channel,
+                "chat_id": conversation.chat_id,
                 "session_id": record.session_id if record else None,
                 "updated_at": record.updated_at if record else None,
-                "cwd": record.cwd if record else workdirs.get(chat_id),
-                "pending_approval": approvals.get(chat_id) is not None,
-                "message_count": len(chat_log.items(chat_id, limit=0)),
+                "cwd": record.cwd if record else workdirs.get(conversation.key),
+                "pending_approval": approvals.get(conversation.key) is not None,
+                "message_count": len(chat_log.items(conversation.key, limit=0)),
             }
         )
     return {"chats": chats}
 
 
 def _chat_payload(
-    chat_id: int,
+    conversation: ConversationRef,
     store: SessionStore,
     workdirs: WorkdirStore,
     approvals,
     chat_log: ChatLogStore,
 ) -> dict[str, Any]:
-    record = store.get(chat_id)
-    resume_targets = get_resume_targets_for_chat(chat_id)
+    record = store.get(conversation.key)
+    resume_targets = get_resume_targets_for_chat(conversation.key)
     messages = [
         {
             "id": item.id,
+            "channel": item.channel,
+            "chat_id": item.chat_id,
             "role": item.role,
             "source": item.source,
             "text": item.text,
             "created_at": item.created_at,
         }
-        for item in chat_log.items(chat_id)
+        for item in chat_log.items(conversation.key)
     ]
     return {
-        "chat_id": chat_id,
+        "conversation_key": conversation.key,
+        "channel": conversation.channel,
+        "chat_id": conversation.chat_id,
         "session_id": record.session_id if record else None,
         "updated_at": record.updated_at if record else None,
-        "cwd": record.cwd if record else workdirs.get(chat_id),
-        "pending_approval": approvals.get(chat_id) is not None,
+        "cwd": record.cwd if record else workdirs.get(conversation.key),
+        "pending_approval": approvals.get(conversation.key) is not None,
         "resume_targets": [
             {
                 "bot": target.settings.name,
@@ -292,13 +313,15 @@ def _chat_payload(
     }
 
 
-def _parse_chat_id(raw: Any) -> int | None:
-    if raw is None:
+def _parse_conversation(conversation_key: Any, chat_id: Any) -> ConversationRef | None:
+    if conversation_key is not None and str(conversation_key).strip():
+        return parse_conversation_key(str(conversation_key).strip())
+    if chat_id is None:
         return None
-    text = str(raw).strip()
-    if not text or not text.lstrip("-").isdigit():
+    text = str(chat_id).strip()
+    if not text:
         return None
-    return int(text)
+    return parse_conversation_key(text)
 
 
 def _render_status_html(payload: dict[str, Any]) -> str:
@@ -310,6 +333,7 @@ def _render_status_html(payload: dict[str, Any]) -> str:
     rows = "\n".join(
         (
             "<tr>"
+            f"<td>{html.escape(str(item['channel']))}</td>"
             f"<td>{html.escape(str(item['chat_id']))}</td>"
             f"<td>{html.escape(item['session_id'])}</td>"
             f"<td>{html.escape(item['updated_at'])}</td>"
@@ -317,14 +341,14 @@ def _render_status_html(payload: dict[str, Any]) -> str:
             "</tr>"
         )
         for item in sessions
-    ) or '<tr><td colspan="4">No sessions</td></tr>'
+    ) or '<tr><td colspan="5">No sessions</td></tr>'
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Telegram Agent Bridge</title>
+  <title>Local Agent Bridge</title>
   <style>
     :root {{
       color-scheme: light;
@@ -412,7 +436,7 @@ def _render_status_html(payload: dict[str, Any]) -> str:
 </head>
 <body>
   <main>
-    <h1>Telegram Agent Bridge</h1>
+    <h1>{html.escape(service['name'])}</h1>
     <p>Local-only status page. JSON endpoint: <code>/api/status</code>. Chat UI: <a href="/chat">/chat</a></p>
     <div class="grid">
       <section class="card"><div class="label">Requests</div><div class="value">{service['requests_total']}</div></section>
@@ -456,7 +480,7 @@ def _render_status_html(payload: dict[str, Any]) -> str:
       <h2>Sessions</h2>
       <table>
         <thead>
-          <tr><th>Chat ID</th><th>Session ID</th><th>Updated</th><th>CWD</th></tr>
+          <tr><th>Channel</th><th>Chat ID</th><th>Session ID</th><th>Updated</th><th>CWD</th></tr>
         </thead>
         <tbody>{rows}</tbody>
       </table>
@@ -646,19 +670,19 @@ def _render_chat_html(settings: Settings) -> str:
     <aside>
       <h1>Local Chat</h1>
       <p class="subtle">Bridge: {title}</p>
-      <input id="chatIdInput" placeholder="Telegram chat_id">
+      <input id="conversationInput" placeholder="conversation key, e.g. telegram:12345">
       <div class="chat-list" id="chatList"></div>
     </aside>
     <main>
       <section class="topbar">
         <h2 id="chatTitle">No chat selected</h2>
-        <p class="subtle" id="chatMeta">Pick an existing chat or enter a chat_id manually.</p>
+        <p class="subtle" id="chatMeta">Pick an existing chat or enter a conversation key manually.</p>
         <div class="resume-strip" id="resumeStrip"></div>
       </section>
       <section class="messages" id="messages"></section>
       <form id="composer">
         <div class="controls">
-          <label><input type="checkbox" id="mirrorToggle" checked> mirror desktop message to Telegram</label>
+          <label><input type="checkbox" id="mirrorToggle" checked> mirror desktop message to remote chat</label>
           <button type="submit">Send</button>
         </div>
         <textarea id="promptInput" placeholder="Type a message for the shared chat..."></textarea>
@@ -667,13 +691,13 @@ def _render_chat_html(settings: Settings) -> str:
   </div>
   <script>
     const state = {{
-      currentChatId: null,
+      currentConversationKey: null,
       lastMessageKey: "",
     }};
     const querySuffix = window.location.search || "";
 
     const chatListEl = document.getElementById("chatList");
-    const chatIdInputEl = document.getElementById("chatIdInput");
+    const conversationInputEl = document.getElementById("conversationInput");
     const chatTitleEl = document.getElementById("chatTitle");
     const chatMetaEl = document.getElementById("chatMeta");
     const resumeStripEl = document.getElementById("resumeStrip");
@@ -689,10 +713,10 @@ def _render_chat_html(settings: Settings) -> str:
         .replaceAll(">", "&gt;");
     }}
 
-    function setCurrentChat(chatId) {{
-      state.currentChatId = Number(chatId);
+    function setCurrentChat(conversationKey) {{
+      state.currentConversationKey = String(conversationKey).trim() || null;
       state.lastMessageKey = "";
-      chatIdInputEl.value = String(chatId);
+      conversationInputEl.value = state.currentConversationKey || "";
       refreshChatList();
       refreshChat();
     }}
@@ -731,26 +755,33 @@ def _render_chat_html(settings: Settings) -> str:
       for (const item of payload.chats) {{
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "chat-item" + (item.chat_id === state.currentChatId ? " active" : "");
+        button.className = "chat-item" + (item.conversation_key === state.currentConversationKey ? " active" : "");
         button.innerHTML = `
-          <div><strong>${{item.chat_id}}</strong></div>
+          <div><strong>${{escapeHtml(item.channel)}} · ${{escapeHtml(item.chat_id)}}</strong></div>
+          <div class="subtle">${{escapeHtml(item.conversation_key)}}</div>
           <div class="subtle">${{escapeHtml(item.cwd || "no cwd")}}</div>
           <div class="subtle">messages: ${{item.message_count}}${{item.pending_approval ? " · pending approval" : ""}}</div>
         `;
-        button.addEventListener("click", () => setCurrentChat(item.chat_id));
+        button.addEventListener("click", () => setCurrentChat(item.conversation_key));
         chatListEl.appendChild(button);
       }}
     }}
 
     async function refreshChat() {{
-      if (state.currentChatId === null || Number.isNaN(state.currentChatId)) {{
-        messagesEl.innerHTML = "<div class='bubble system'>Enter a chat_id to start.</div>";
+      if (!state.currentConversationKey) {{
+        messagesEl.innerHTML = "<div class='bubble system'>Enter a conversation key to start.</div>";
         return;
       }}
-      const response = await fetch(`/api/chat?chat_id=${{encodeURIComponent(state.currentChatId)}}${{querySuffix ? "&" + querySuffix.slice(1) : ""}}`);
+      const response = await fetch(`/api/chat?conversation_key=${{encodeURIComponent(state.currentConversationKey)}}${{querySuffix ? "&" + querySuffix.slice(1) : ""}}`);
+      if (!response.ok) {{
+        messagesEl.innerHTML = "<div class='bubble system'>Conversation not found yet.</div>";
+        return;
+      }}
       const payload = await response.json();
-      chatTitleEl.textContent = `Chat ${{payload.chat_id}}`;
-      chatMetaEl.textContent = `cwd: ${{payload.cwd || "unknown"}} · session: ${{payload.session_id || "none"}}${{payload.pending_approval ? " · pending approval" : ""}}`;
+      state.currentConversationKey = payload.conversation_key;
+      conversationInputEl.value = payload.conversation_key;
+      chatTitleEl.textContent = `${{payload.channel}} · ${{payload.chat_id}}`;
+      chatMetaEl.textContent = `key: ${{payload.conversation_key}} · cwd: ${{payload.cwd || "unknown"}} · session: ${{payload.session_id || "none"}}${{payload.pending_approval ? " · pending approval" : ""}}`;
       renderResumeTargets(payload.resume_targets || []);
       const messageKey = payload.messages.map(item => item.id).join(",");
       if (messageKey === state.lastMessageKey) {{
@@ -770,9 +801,9 @@ def _render_chat_html(settings: Settings) -> str:
     composerEl.addEventListener("submit", async (event) => {{
       event.preventDefault();
       const prompt = promptInputEl.value.trim();
-      const chatId = chatIdInputEl.value.trim();
-      if (!chatId || !/^-?\\d+$/.test(chatId)) {{
-        alert("Enter a numeric Telegram chat_id first.");
+      const conversationKey = conversationInputEl.value.trim();
+      if (!conversationKey) {{
+        alert("Enter a conversation key first.");
         return;
       }}
       if (!prompt) {{
@@ -782,23 +813,23 @@ def _render_chat_html(settings: Settings) -> str:
         method: "POST",
         headers: {{ "Content-Type": "application/json" }},
         body: JSON.stringify({{
-          chat_id: Number(chatId),
+          conversation_key: conversationKey,
           prompt,
           mirror_to_telegram: mirrorToggleEl.checked,
         }}),
       }});
       promptInputEl.value = "";
-      if (state.currentChatId !== Number(chatId)) {{
-        setCurrentChat(Number(chatId));
+      if (state.currentConversationKey !== conversationKey) {{
+        setCurrentChat(conversationKey);
         return;
       }}
       await refreshChat();
     }});
 
-    chatIdInputEl.addEventListener("change", () => {{
-      const value = chatIdInputEl.value.trim();
-      if (/^-?\\d+$/.test(value)) {{
-        setCurrentChat(Number(value));
+    conversationInputEl.addEventListener("change", () => {{
+      const value = conversationInputEl.value.trim();
+      if (value) {{
+        setCurrentChat(value);
       }}
     }});
 

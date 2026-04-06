@@ -1,0 +1,164 @@
+# Voice Bridge Obsidian — Configuration
+# Copy to settings.yaml and adjust for your environment
+
+vault:
+  # Absolute path to your Obsidian vault
+  path: "/home/chao/projects/ObsidianVaults/openclaw"
+
+  # Folder structure within the vault
+  folders:
+    inbox: "Inbox/Voice"
+    daily: "Daily"
+    projects: "Projects"
+    summaries_daily: "Summaries/Daily"
+    summaries_weekly: "Summaries/Weekly"
+    pending: "Pending"
+
+stt:
+  # STT adapter: faster_whisper | whisper | custom
+  adapter: "faster_whisper"
+
+  # Model size: tiny, base, small, medium, large-v3
+  model: "small"
+
+  # Device: cpu | cuda
+  device: "cpu"  # 改为 "cuda" 后安装 jetson-containers 版 ctranslate2
+
+  # Compute type: int8 | float16 | float32
+  compute_type: "int8"
+
+  # Language hint (optional, improves accuracy if known)
+  # Set to null for auto-detection
+  language: null
+
+  # Custom adapter module path (only if adapter == "custom")
+  # custom_module: "my_package.my_stt_adapter"
+
+intent:
+  # Minimum confidence threshold for intent classification
+  confidence_threshold: 0.5
+
+  # Use Claude API for enhanced classification (requires CLAUDE_API_KEY)
+  use_claude: false
+
+  # Claude model to use for intent classification
+  claude_model: "claude-sonnet-4-20250514"
+
+  # Keyword patterns for local classification (fallback)
+  # These are checked before Claude API if use_claude is true
+  keyword_patterns:
+    capture_idea:
+      - "idee"          # German: idea
+      - "想法"          # Chinese: idea
+      - "灵感"          # Chinese: inspiration
+      - "gedanke"       # German: thought
+      - "突然想到"      # Chinese: suddenly thought of
+      - "es wäre cool"  # German: it would be cool
+    task:
+      - "aufgabe"       # German: task
+      - "todo"          # Universal
+      - "待办"          # Chinese: to-do
+      - "要做的"        # Chinese: things to do
+      - "muss ich"      # German: I must
+      - "别忘了"        # Chinese: don't forget
+      - "记得"          # Chinese: remember to
+    journal:
+      - "tagebuch"      # German: diary
+      - "日记"          # Chinese: diary
+      - "heute fühle"   # German: today I feel
+      - "今天的心情"    # Chinese: today's mood
+      - "反思"          # Chinese: reflection
+      - "gefühl"        # German: feeling
+    project_update:
+      - "projekt"       # German: project
+      - "项目"          # Chinese: project
+      - "fortschritt"   # German: progress
+      - "进展"          # Chinese: progress
+      - "status"        # Universal
+    meeting_note:
+      - "meeting"       # Universal
+      - "会议"          # Chinese: meeting
+      - "besprechung"   # German: meeting
+      - "call"          # Universal
+      - "通话"          # Chinese: call
+    knowledge:
+      - "wissen"        # German: knowledge
+      - "知识"          # Chinese: knowledge
+      - "gelernt"       # German: learned
+      - "学到"          # Chinese: learned
+      - "摘录"          # Chinese: excerpt
+      - "notiz"         # German: note
+      - "笔记"          # Chinese: note
+    reminder_request:
+      - "erinnere"      # German: remind
+      - "提醒"          # Chinese: remind
+      - "um"            # German: at (time)
+      - "之前"          # Chinese: before
+      - "定时"          # Chinese: schedule
+    command_request:
+      - "führe aus"     # German: execute
+      - "执行"          # Chinese: execute
+      - "starte"        # German: start
+      - "启动"          # Chinese: start/launch
+      - " Öffne"        # German: open
+      - "打开"          # Chinese: open
+
+actions:
+  # Safe mode: when true, only record actions without executing
+  safe_mode: false
+
+  # Allowlisted command templates for command_request
+  # Use {param} for parameter substitution
+  allowed_commands:
+    - template: "open {url}"
+      description: "Open a URL in the browser"
+      params: ["url"]
+    - template: "echo {message}"
+      description: "Display a message"
+      params: ["message"]
+
+  # High-risk commands that are ALWAYS blocked
+  blocked_patterns:
+    - "rm "
+    - "rmdir"
+    - "del "
+    - "shutdown"
+    - "reboot"
+    - "mkfs"
+    - "dd if="
+    - "> /dev/"
+    - "curl.*|.*sh"
+    - "wget.*|.*sh"
+
+obsidian:
+  # Method: file | cli | api
+  # file = direct filesystem writes (recommended)
+  # cli = use obsidian-cli if available
+  # api = use Obsidian Local REST API plugin
+  method: "file"
+
+  # Obsidian CLI path (only needed if method == "cli")
+  # cli_path: "/usr/local/bin/obsidian-cli"
+
+  # Obsidian Local REST API settings (only needed if method == "api")
+  # api_url: "http://localhost:27124"
+  # api_key: "your-api-key"
+
+logging:
+  level: "INFO"
+  dir: "logs"
+  # Log file name pattern (date placeholders: {year}, {month}, {day})
+  file_pattern: "voice-bridge-{year}-{month}-{day}.log"
+  # Max log file size in MB before rotation
+  max_size_mb: 10
+  # Number of rotated log files to keep
+  backup_count: 5
+
+digest:
+  # Time for daily digest (24h format)
+  daily_time: "22:00"
+  # Day and time for weekly digest
+  weekly_day: "sunday"    # monday-sunday
+  weekly_time: "21:30"
+  # Include audio file links in digest
+  include_audio_links: false

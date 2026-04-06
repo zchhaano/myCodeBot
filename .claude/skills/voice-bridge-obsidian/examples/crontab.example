@@ -1,0 +1,11 @@
+# Voice Bridge Obsidian — Crontab Example
+# Install with: crontab examples/crontab.example
+
+SHELL=/bin/bash
+MAILTO=""
+
+# Daily digest at 22:00
+0 22 * * * cd /home/chao/projects/ObsidianVaults/openclaw/.claude/skills/voice-bridge-obsidian && /usr/bin/python3 scripts/daily_digest.py >> logs/digest.log 2>&1
+
+# Weekly digest every Sunday at 21:30
+30 21 * * 0 cd /home/chao/projects/ObsidianVaults/openclaw/.claude/skills/voice-bridge-obsidian && /usr/bin/python3 scripts/weekly_digest.py >> logs/digest.log 2>&1

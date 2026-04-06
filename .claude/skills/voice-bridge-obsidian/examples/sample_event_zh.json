@@ -1,0 +1,12 @@
+{
+  "platform": "whatsapp",
+  "user_id": "9876543210",
+  "chat_id": "chat-001",
+  "message_id": "msg-001",
+  "timestamp": "2025-01-15T09:00:00Z",
+  "audio_path": "/tmp/voice_notes/meeting_note_zh.opus",
+  "mime_type": "audio/opus",
+  "language_hint": "zh",
+  "text_caption": "项目周会记录",
+  "contact_name": "张三"
+}

@@ -1,0 +1,12 @@
+{
+  "platform": "telegram",
+  "user_id": "12345678",
+  "chat_id": "-1001234567890",
+  "message_id": "42",
+  "timestamp": "2025-01-15T14:30:00Z",
+  "audio_path": "/tmp/voice_notes/audio_42.ogg",
+  "mime_type": "audio/ogg",
+  "language_hint": "de",
+  "text_caption": "Idee für das Projekt",
+  "contact_name": "Max Mustermann"
+}

@@ -1,0 +1,23 @@
+{
+  "skill_name": "voice-bridge-obsidian",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I just received a voice message from Telegram. Here's the event JSON: {\"platform\": \"telegram\", \"user_id\": \"12345\", \"chat_id\": \"-1001\", \"message_id\": \"99\", \"timestamp\": \"2025-01-15T18:00:00Z\", \"audio_path\": \"/tmp/voice_99.ogg\", \"mime_type\": \"audio/ogg\", \"language_hint\": \"de\"}. Process it and store it in my Obsidian vault.",
+      "expected_output": "Should validate the event, attempt transcription, classify intent, and write to Obsidian inbox. Should report each step's result.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Generate today's daily voice digest for my Obsidian vault.",
+      "expected_output": "Should run the daily_digest.py script, aggregate voice notes from today, produce a structured summary with themes, action items, and intent breakdown.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I got a WhatsApp voice note that says '提醒我周五下午三点之前把报告发出去' (remind me to send the report before Friday 3pm). It should be classified as a reminder. Make sure it goes to the pending queue, NOT auto-executed.",
+      "expected_output": "Should correctly classify as reminder_request, queue it in Pending/Reminders.md, and NOT set any system reminder automatically. Should confirm the record-only behavior.",
+      "files": []
+    }
+  ]
+}

@@ -480,6 +480,7 @@ PERMISSION_PATTERNS = (
     re.compile(r"(写入|编辑|修改).{0,12}(README|文件|权限|授权)"),
     re.compile(r"(permission|approval|authorize)", re.IGNORECASE),
     re.compile(r"(write|edit).{0,20}(access|permission)", re.IGNORECASE),
+    re.compile(r"(berechtigung|berechtigungen|freigabe|freigeben|genehmig|erlaubnis)", re.IGNORECASE),
 )
 
 APPROVAL_CONTINUE_PROMPT = (
@@ -686,6 +687,8 @@ class BridgeCore:
             f"claude_version: {self._version_info['claude_version']}\n"
             f"codex_version: {self._version_info['codex_version']}\n"
             f"copilot_version: {self._version_info['copilot_version']}\n"
+            f"transcription_backend: {self._version_info['transcription_backend']}\n"
+            f"faster_whisper_version: {self._version_info['faster_whisper_version']}\n"
             f"whisper_bin: {self._version_info['whisper_bin']}\n"
             f"whisper_resolved: {self._version_info['whisper_resolved']}\n"
             f"python: {self._version_info['python']}\n"
